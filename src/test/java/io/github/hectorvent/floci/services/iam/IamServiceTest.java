@@ -56,6 +56,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class IamServiceTest {
 
+    /** The one answer ChangePassword gives for either half of its refusal, captured 2026-10-31. */
+    private static final String PASSWORD_CHANGE_REFUSAL = "Either the new password does not "
+            + "conform to the account password policy or the old password was incorrect.";
+
     private IamService iamService;
 
     @BeforeEach
@@ -1180,7 +1184,7 @@ class IamServiceTest {
         // The proof the write took is behavioural rather than a read of the stored field: the
         // new password is now the current one and the old one is not.
         iamService.changePassword("alice", "An0ther$ecret!", "Th1rd$ecret!");
-        assertEquals("InvalidParameterValue", assertThrows(AwsException.class,
+        assertEquals("AccessDenied", assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "An0ther$ecret!", "F0urth$ecret!"))
                 .getErrorCode());
     }
@@ -1193,26 +1197,37 @@ class IamServiceTest {
         AwsException ex = assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "N0tTheOne!", "An0ther$ecret!"));
 
-        assertEquals("InvalidParameterValue", ex.getErrorCode());
-        assertEquals(400, ex.getHttpStatus());
+        assertEquals("AccessDenied", ex.getErrorCode());
+        assertEquals(403, ex.getHttpStatus());
+        assertEquals(PASSWORD_CHANGE_REFUSAL, ex.getMessage());
         // The refusal left the password alone, so the original still changes it.
         iamService.changePassword("alice", "Sup3r$ecret!", "An0ther$ecret!");
     }
 
     @Test
-    void changePasswordChecksTheOldPasswordBeforeTheAccountPolicy() {
+    void changePasswordAnswersBothOfItsCausesWithOneSentence() {
         iamService.createUser("alice", "/");
         iamService.createLoginProfile("alice", "Sup3r$ecret!", false);
         AccountPasswordPolicy policy = new AccountPasswordPolicy();
         policy.setMinimumPasswordLength(12);
         iamService.updateAccountPasswordPolicy(policy);
 
-        // Both halves of the request are wrong. A caller who cannot prove the current password is
-        // told that and nothing about what the policy would have required.
-        AwsException ex = assertThrows(AwsException.class,
+        // One half wrong, the other half wrong, and both wrong at once: AWS merges the causes, so
+        // all three answer the same thing and none of them names the rule the policy would apply.
+        AwsException both = assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "N0tTheOne!", "short"));
+        AwsException oldOnly = assertThrows(AwsException.class,
+                () -> iamService.changePassword("alice", "N0tTheOne!", "An0ther$ecret!"));
+        AwsException policyOnly = assertThrows(AwsException.class,
+                () -> iamService.changePassword("alice", "Sup3r$ecret!", "short"));
 
-        assertEquals("InvalidParameterValue", ex.getErrorCode());
+        for (AwsException ex : List.of(both, oldOnly, policyOnly)) {
+            assertEquals("AccessDenied", ex.getErrorCode());
+            assertEquals(403, ex.getHttpStatus());
+            assertEquals(PASSWORD_CHANGE_REFUSAL, ex.getMessage());
+        }
+        // The password is untouched by all three, so the original still changes it.
+        iamService.changePassword("alice", "Sup3r$ecret!", "An0ther$ecret!");
     }
 
     @Test
@@ -1228,8 +1243,14 @@ class IamServiceTest {
         AwsException ex = assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "Sup3r$ecret!", "short"));
 
-        assertEquals("PasswordPolicyViolation", ex.getErrorCode());
-        assertEquals(400, ex.getHttpStatus());
+        assertEquals("AccessDenied", ex.getErrorCode());
+        assertEquals(403, ex.getHttpStatus());
+        // The rule the password broke stays out of the answer, where an administrator setting the
+        // same password is told it.
+        assertEquals(PASSWORD_CHANGE_REFUSAL, ex.getMessage());
+        assertTrue(assertThrows(AwsException.class,
+                () -> iamService.updateLoginProfile("alice", "short", null))
+                .getMessage().contains("a minimum length of 12"));
         iamService.changePassword("alice", "Sup3r$ecret!", "An0ther$ecret!");
     }
 
@@ -1262,11 +1283,12 @@ class IamServiceTest {
         iamService.changePassword("alice", "Sup3r$ecret!", "An0ther$ecret!");
 
         // The window is one superseded password, and the one in hand counts alongside it, so
-        // neither going back nor standing still is allowed.
-        assertEquals("PasswordPolicyViolation", assertThrows(AwsException.class,
+        // neither going back nor standing still is allowed. Reuse is one of the policy's rules, so
+        // ChangePassword answers it with the same merged sentence as its other causes.
+        assertEquals(PASSWORD_CHANGE_REFUSAL, assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "An0ther$ecret!", "Sup3r$ecret!"))
-                .getErrorCode());
-        assertEquals("PasswordPolicyViolation", assertThrows(AwsException.class,
+                .getMessage());
+        assertEquals("AccessDenied", assertThrows(AwsException.class,
                 () -> iamService.changePassword("alice", "An0ther$ecret!", "An0ther$ecret!"))
                 .getErrorCode());
     }
@@ -1312,12 +1334,14 @@ class IamServiceTest {
         iamService.updateLoginProfile("alice", "An0ther$ecret!", null);
 
         // An administrator reset is a password the policy applies to as much as a self-service
-        // change, and the two share one history.
+        // change, and the two share one history. What differs is the answer: the reset names the
+        // window, where ChangePassword merges every cause of its own refusal into one sentence.
         assertEquals("PasswordPolicyViolation", assertThrows(AwsException.class,
                 () -> iamService.updateLoginProfile("alice", "Sup3r$ecret!", null)).getErrorCode());
-        assertEquals("PasswordPolicyViolation", assertThrows(AwsException.class,
-                () -> iamService.changePassword("alice", "An0ther$ecret!", "Sup3r$ecret!"))
-                .getErrorCode());
+        AwsException selfService = assertThrows(AwsException.class,
+                () -> iamService.changePassword("alice", "An0ther$ecret!", "Sup3r$ecret!"));
+        assertEquals("AccessDenied", selfService.getErrorCode());
+        assertEquals(PASSWORD_CHANGE_REFUSAL, selfService.getMessage());
     }
 
     @Test
@@ -2795,6 +2819,30 @@ class IamServiceTest {
                 iamService.resolveCallerArn("floci").orElseThrow());
         assertNotNull(iamService.resolveCallerContext("floci"));
         assertNotNull(iamService.resolvePrincipalContext(user.getArn()));
+    }
+
+    /**
+     * Captured from a real account: a value over the member's 20-character minimum that parses as
+     * no ARN is refused, where this service used to take whatever followed the last slash and
+     * simulate against a user of that name. Both principal readers answer it, since both take the
+     * same member.
+     */
+    @Test
+    void aPolicySourceArnThatParsesAsNoArnIsRefused() {
+        iamService.createUser("bob", "/");
+
+        for (String malformed : List.of("arn:aws:iam:user/bob", "arn:aws:iam::user/bob",
+                "not-an-arn-but-long-enough:user/bob")) {
+            AwsException ex = assertThrows(AwsException.class,
+                    () -> iamService.resolvePrincipalContext(malformed));
+            assertEquals("InvalidInput", ex.getErrorCode());
+            assertEquals(400, ex.getHttpStatus());
+            assertEquals("Invalid ARN provided in the request: " + malformed, ex.getMessage());
+            assertEquals("InvalidInput", assertThrows(AwsException.class,
+                    () -> iamService.resolveAttachedPrincipalContext(malformed)).getErrorCode());
+        }
+        // The user the tail named exists, so the refusal is the parse rather than the lookup.
+        assertNotNull(iamService.resolvePrincipalContext("arn:aws:iam::000000000000:user/bob"));
     }
 
     @Test

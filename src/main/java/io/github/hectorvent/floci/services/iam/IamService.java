@@ -2723,7 +2723,7 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
             validatePassword(password, "password");
             // No profile to pass: a password being set for the first time replaces nothing, and a
             // profile deleted and recreated takes its history with it.
-            checkPasswordPolicy(password, null);
+            requirePasswordPolicyConformance(password, null);
             profile = new LoginProfile(userName, password, passwordResetRequired);
             loginProfiles.put(userName, profile);
         }
@@ -2750,7 +2750,7 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
             LoginProfile profile = getLoginProfile(userName);
             if (password != null) {
                 validatePassword(password, "password");
-                checkPasswordPolicy(password, profile);
+                requirePasswordPolicyConformance(password, profile);
                 recordSupersededPassword(profile);
                 profile.setPassword(password);
                 profile.setPasswordLastChanged(Instant.now());
@@ -2782,9 +2782,8 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
      * affected by this operation". The caller is resolved from the signing access key before this
      * is reached, so the user name here is already that user.
      *
-     * <p>The old password is checked before the new one is held to the account's policy, so a
-     * caller who cannot prove the current password is refused on that alone and learns nothing
-     * about what the policy would have required.
+     * <p>Either half failing answers one sentence, so a caller learns neither which half failed
+     * nor which rule of the policy did.
      *
      * <p>The comparison and the write are one step under {@code loginProfileLock}, which is what
      * makes the refusal above mean anything: read apart from the write, two requests presenting
@@ -2798,24 +2797,20 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
      * password programmatically", which is only true if the change itself clears the state the
      * reset left behind.
      *
-     * <p>An old password that does not match is the one refusal the reference leaves unnamed:
-     * every error it publishes for this operation describes something else, and the error it
-     * documents for a caller that is not an IAM user is {@code InvalidUserType}, raised by the
-     * handler. The common error types are additive per action, so this answers
-     * {@code InvalidParameterValue}, which is the published one for a parameter value the service
-     * cannot accept, with the same 400 as the operation's other sender faults.
+     * <p>The refusal itself is {@link #passwordChangeRefused}, captured from a real account:
+     * the reference publishes no error for a mismatched old password, and none of the six this
+     * operation declares describes one. The error it does document for a caller that is not an IAM
+     * user is {@code InvalidUserType}, raised by the handler.
      */
     public void changePassword(String userName, String oldPassword, String newPassword) {
         validatePassword(oldPassword, "oldPassword");
         validatePassword(newPassword, "newPassword");
         synchronized (loginProfileLock) {
             LoginProfile profile = getLoginProfile(userName);
-            if (!oldPassword.equals(profile.getPassword())) {
-                throw new AwsException("InvalidParameterValue",
-                        "The old password supplied is not the current password for user "
-                                + userName + ".", 400);
+            if (!oldPassword.equals(profile.getPassword())
+                    || passwordPolicyRefusal(newPassword, profile).isPresent()) {
+                throw passwordChangeRefused();
             }
-            checkPasswordPolicy(newPassword, profile);
             recordSupersededPassword(profile);
             profile.setPassword(newPassword);
             profile.setPasswordLastChanged(Instant.now());
@@ -2826,22 +2821,56 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
     }
 
     /**
-     * The account's password policy applied to a password about to be stored, and only when the
-     * account has ever set one, matching {@link #getAccountPasswordPolicy}'s own
-     * NoSuchEntity-by-default semantics. {@code replacing} is the profile the password is being
-     * written over, or null when there is none to reuse a password from.
+     * The one answer {@code ChangePassword} gives for either half of its refusal, captured from a
+     * real account: {@code AccessDenied} with "Either the new password does not conform to the
+     * account password policy or the old password was incorrect.". AWS merges the two causes on
+     * purpose, which is worth keeping rather than tidying: the answer tells a caller nothing about
+     * which half failed, and a caller who cannot prove the current password learns nothing about
+     * the policy either.
+     *
+     * <p>The capture covers a wrong old password with a conforming new one. That its own sentence
+     * names the policy half is what this service reads the other half from: the two causes share
+     * one answer, so a new password the policy refuses takes the same one, where
+     * {@code CreateLoginProfile} and {@code UpdateLoginProfile} keep naming the rule that failed.
      */
-    private void checkPasswordPolicy(String password, LoginProfile replacing) {
-        getAccountPasswordPolicy().ifPresent(policy -> {
-            checkPasswordAgainstPolicy(password, policy);
-            if (replacing != null) {
-                checkPasswordNotReused(replacing, password, policy);
-            }
-        });
+    private static AwsException passwordChangeRefused() {
+        return new AwsException("AccessDenied",
+                "Either the new password does not conform to the account password policy or the "
+                        + "old password was incorrect.", 403);
     }
 
     /**
-     * Refuses a password the account's reuse window still holds. The reference defines
+     * The sentence the account's password policy refuses {@code password} with, when it refuses it,
+     * and only when the account has ever set a policy, matching
+     * {@link #getAccountPasswordPolicy}'s own NoSuchEntity-by-default semantics. {@code replacing}
+     * is the profile the password is being written over, or null when there is none to reuse a
+     * password from.
+     *
+     * <p>It reports rather than throws because the two callers answer it differently: an
+     * administrator setting a password is told which rule failed, and {@code ChangePassword}
+     * merges every cause into {@link #passwordChangeRefused}.
+     */
+    private Optional<String> passwordPolicyRefusal(String password, LoginProfile replacing) {
+        return getAccountPasswordPolicy().flatMap(policy -> {
+            Optional<String> broken = passwordAgainstPolicy(password, policy);
+            if (broken.isPresent() || replacing == null) {
+                return broken;
+            }
+            return passwordReuse(replacing, password, policy);
+        });
+    }
+
+    /** The same policy, answered as {@code PasswordPolicyViolation} naming the rule that failed. */
+    private void requirePasswordPolicyConformance(String password, LoginProfile replacing) {
+        Optional<String> refusal = passwordPolicyRefusal(password, replacing);
+        if (refusal.isPresent()) {
+            throw new AwsException("PasswordPolicyViolation", refusal.get(), 400);
+        }
+    }
+
+    /**
+     * The sentence for a password the account's reuse window still holds, when it holds one. The
+     * reference defines
      * {@code PasswordReusePrevention} as "the number of previous passwords that IAM users are
      * prevented from reusing", with no value meaning "IAM users are not prevented from reusing
      * previous passwords", so the window is that many superseded passwords.
@@ -2853,22 +2882,22 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
      * first is also what makes the A to B and back to A case refusable at the smallest window the
      * policy accepts.
      */
-    private static void checkPasswordNotReused(LoginProfile profile, String password,
-                                               AccountPasswordPolicy policy) {
+    private static Optional<String> passwordReuse(LoginProfile profile, String password,
+                                                  AccountPasswordPolicy policy) {
         Integer window = policy.getPasswordReusePrevention();
         if (window == null) {
-            return;
+            return Optional.empty();
         }
         List<String> held = profile.getPreviousPasswords();
         List<String> refused = new ArrayList<>();
         refused.add(profile.getPassword());
         refused.addAll(held.subList(0, Math.min(window, held.size())));
         if (refused.contains(password)) {
-            throw new AwsException("PasswordPolicyViolation",
-                    "Password does not conform to the account password policy. It must not be the "
-                            + "current password or one of the previous " + window
-                            + " passwords.", 400);
+            return Optional.of("Password does not conform to the account password policy. It must "
+                    + "not be the current password or one of the previous " + window
+                    + " passwords.");
         }
+        return Optional.empty();
     }
 
     /**
@@ -2906,7 +2935,7 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
         }
     }
 
-    private void checkPasswordAgainstPolicy(String password, AccountPasswordPolicy policy) {
+    private Optional<String> passwordAgainstPolicy(String password, AccountPasswordPolicy policy) {
         List<String> violations = new ArrayList<>();
         if (password.length() < policy.getMinimumPasswordLength()) {
             violations.add("a minimum length of " + policy.getMinimumPasswordLength());
@@ -2924,10 +2953,10 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
             violations.add("at least one non-alphanumeric character");
         }
         if (!violations.isEmpty()) {
-            throw new AwsException("PasswordPolicyViolation",
-                    "Password does not conform to the account password policy. It must contain: "
-                            + String.join(", ", violations) + ".", 400);
+            return Optional.of("Password does not conform to the account password policy. It must "
+                    + "contain: " + String.join(", ", violations) + ".");
         }
+        return Optional.empty();
     }
 
     /**
@@ -5715,6 +5744,13 @@ public class IamService implements SessionAccountLookup, ResourceProvider {
     private CallerContext principalContext(String principalArn, boolean withAccountGrants) {
         if (principalArn == null || principalArn.isBlank()) {
             throw new AwsException("ValidationError", "PolicySourceArn is required.", 400);
+        }
+        // Captured from a real account: a value that clears the member's 20-character minimum and
+        // parses as no ARN is refused rather than resolved out of whatever follows its last slash,
+        // which used to simulate `arn:aws:iam:user/bob` as the user `bob`.
+        if (!AwsArnUtils.isArn(principalArn)) {
+            throw new AwsException("InvalidInput",
+                    "Invalid ARN provided in the request: " + principalArn, 400);
         }
         if (principalArn.contains(":user/")) {
             String userName = principalArn.substring(principalArn.lastIndexOf('/') + 1);

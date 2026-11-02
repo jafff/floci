@@ -38,6 +38,8 @@ class IamChangePasswordIntegrationTest {
     private static final String REGION = "us-east-1";
     private static final String PASSWORD = "Sup3r$ecret!";
     private static final String NEW_PASSWORD = "An0ther$ecret!";
+    private static final String REFUSAL = "Either the new password does not conform to the account "
+            + "password policy or the old password was incorrect.";
 
     @RegisterExtension
     final PartitionCleanup cleanup = new PartitionCleanup();
@@ -53,8 +55,8 @@ class IamChangePasswordIntegrationTest {
         // Nothing echoes a password back, so the proof the write took is the next call: the old
         // password is no longer the current one and the new one is.
         signedAs(accessKeyId, Map.of("OldPassword", PASSWORD, "NewPassword", "Th1rd$ecret!"))
-                .statusCode(400)
-                .body("ErrorResponse.Error.Code", equalTo("InvalidParameterValue"));
+                .statusCode(403)
+                .body("ErrorResponse.Error.Code", equalTo("AccessDenied"));
         signedAs(accessKeyId, Map.of("OldPassword", NEW_PASSWORD, "NewPassword", "Th1rd$ecret!"))
                 .statusCode(200);
     }
@@ -104,20 +106,50 @@ class IamChangePasswordIntegrationTest {
                 .body("ErrorResponse.Error.Message", containsString("'oldPassword'"));
     }
 
+    /**
+     * Both halves of the refusal answer one sentence, which is what the capture of 2026-10-31
+     * shows for a wrong old password and what AWS's own wording says of the policy half. The
+     * answer names neither the half that failed nor the rule behind it, so the two requests here
+     * are indistinguishable to the caller while the policy is what refuses one and the old
+     * password the other.
+     */
     @Test
-    void theNewPasswordIsHeldToTheAccountPasswordPolicy() {
+    void theNewPasswordIsHeldToTheAccountPasswordPolicyWithTheSameAnswer() {
         String accessKeyId = userWithAConsolePassword("policy");
         admin("UpdateAccountPasswordPolicy", Map.of("MinimumPasswordLength", "20",
                 "RequireSymbols", "true", "RequireNumbers", "true")).statusCode(200);
         cleanup.register(() -> admin("DeleteAccountPasswordPolicy", Map.of()).statusCode(200));
 
         signedAs(accessKeyId, Map.of("OldPassword", PASSWORD, "NewPassword", "sh0rt!"))
-                .statusCode(400)
-                .body("ErrorResponse.Error.Code", equalTo("PasswordPolicyViolation"));
+                .statusCode(403)
+                .body("ErrorResponse.Error.Code", equalTo("AccessDenied"))
+                .body("ErrorResponse.Error.Type", equalTo("Sender"))
+                .body("ErrorResponse.Error.Message", equalTo(REFUSAL));
+
+        signedAs(accessKeyId,
+                Map.of("OldPassword", "N0tTheOne!", "NewPassword", "L0ngEn0ugh$ecret!!!!"))
+                .statusCode(403)
+                .body("ErrorResponse.Error.Code", equalTo("AccessDenied"))
+                .body("ErrorResponse.Error.Message", equalTo(REFUSAL));
 
         signedAs(accessKeyId,
                 Map.of("OldPassword", PASSWORD, "NewPassword", "L0ngEn0ugh$ecret!!!!"))
                 .statusCode(200);
+    }
+
+    /** An administrator setting the same password is still told which rule it broke. */
+    @Test
+    void anAdministratorIsStillToldWhichRuleThePasswordBroke() {
+        String userName = user("admin-sets");
+        admin("UpdateAccountPasswordPolicy", Map.of("MinimumPasswordLength", "20",
+                "RequireSymbols", "true", "RequireNumbers", "true")).statusCode(200);
+        cleanup.register(() -> admin("DeleteAccountPasswordPolicy", Map.of()).statusCode(200));
+
+        admin("CreateLoginProfile", Map.of("UserName", userName, "Password", "sh0rt!"))
+                .statusCode(400)
+                .body("ErrorResponse.Error.Code", equalTo("PasswordPolicyViolation"))
+                .body("ErrorResponse.Error.Message",
+                        containsString("a minimum length of 20"));
     }
 
     /** A user holding a console password, with an access key to sign its own requests with. */
