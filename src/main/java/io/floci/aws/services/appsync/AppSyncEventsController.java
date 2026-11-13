@@ -18,7 +18,7 @@ import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-@Path("/_appsync-events")
+@Path(AppSyncEventsRouteFilter.INTERNAL_PREFIX)
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class AppSyncEventsController {
@@ -66,65 +66,6 @@ public class AppSyncEventsController {
     @Path("/v2/apis")
     public ObjectNode listApis(@QueryParam("maxResults") Integer limit, @QueryParam("nextToken") String token) {
         return service.listApis(limit, token);
-    }
-
-    @POST
-    @Path("/v2/apis/{apiId}/channelNamespaces")
-    public ObjectNode createChannelNamespace(@PathParam("apiId") String id, JsonNode request) {
-        return wrap("channelNamespace", service.createNamespace(id, request));
-    }
-
-    @GET
-    @Path("/v2/apis/{apiId}/channelNamespaces/{name}")
-    public ObjectNode getChannelNamespace(@PathParam("apiId") String id, @PathParam("name") String name) {
-        return wrap("channelNamespace", service.getNamespace(id, name));
-    }
-
-    @POST
-    @Path("/v2/apis/{apiId}/channelNamespaces/{name}")
-    public ObjectNode updateChannelNamespace(@PathParam("apiId") String id, @PathParam("name") String name, JsonNode request) {
-        return wrap("channelNamespace", service.updateNamespace(id, name, request));
-    }
-
-    @DELETE
-    @Path("/v2/apis/{apiId}/channelNamespaces/{name}")
-    public Response deleteChannelNamespace(@PathParam("apiId") String id, @PathParam("name") String name) {
-        service.deleteNamespace(id, name);
-        transport.invalidate(id, name);
-        return Response.ok().build();
-    }
-
-    @GET
-    @Path("/v2/apis/{apiId}/channelNamespaces")
-    public ObjectNode listChannelNamespaces(@PathParam("apiId") String id,
-                                          @QueryParam("maxResults") Integer limit, @QueryParam("nextToken") String token) {
-        return service.listNamespaces(id, limit, token);
-    }
-
-    @POST
-    @Path("/v1/apis/{apiId}/apikeys")
-    public ObjectNode createApiKey(@PathParam("apiId") String id, JsonNode request) {
-        return wrap("apiKey", service.createKey(id, request));
-    }
-
-    @POST
-    @Path("/v1/apis/{apiId}/apikeys/{keyId}")
-    public ObjectNode updateApiKey(@PathParam("apiId") String id, @PathParam("keyId") String keyId, JsonNode request) {
-        return wrap("apiKey", service.updateKey(id, keyId, request));
-    }
-
-    @DELETE
-    @Path("/v1/apis/{apiId}/apikeys/{keyId}")
-    public Response deleteApiKey(@PathParam("apiId") String id, @PathParam("keyId") String keyId) {
-        service.deleteKey(id, keyId);
-        return Response.ok().build();
-    }
-
-    @GET
-    @Path("/v1/apis/{apiId}/apikeys")
-    public ObjectNode listApiKeys(@PathParam("apiId") String id,
-                                @QueryParam("maxResults") Integer limit, @QueryParam("nextToken") String token) {
-        return service.listKeys(id, limit, token);
     }
 
     private ObjectNode wrap(String field, ObjectNode value) {

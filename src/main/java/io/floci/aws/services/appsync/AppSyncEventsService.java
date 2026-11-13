@@ -33,6 +33,7 @@ public class AppSyncEventsService {
     private final RegionResolver regions;
     private final Clock clock;
     private final String authority;
+    private final String baseHostname;
 
     @Inject
     public AppSyncEventsService(StorageFactory storage, ObjectMapper mapper, RegionResolver regions,
@@ -44,6 +45,7 @@ public class AppSyncEventsService {
         this.regions = regions;
         this.clock = clock;
         URI base = URI.create(config.effectiveBaseUrl());
+        baseHostname = base.getHost();
         String host = base.getHost();
         if ("localhost".equals(host) || "127.0.0.1".equals(host) || "[::1]".equals(host)) {
             host = "localhost.floci.io";
@@ -188,8 +190,15 @@ public class AppSyncEventsService {
 
     /** A public API hostname identifies its owner even without a signed management request. */
     public AccountAwareStorageBackend.OwnedEntry<ObjectNode> resolve(String host) {
-        String id = host == null ? "" : host.split("[.:]", 2)[0];
+        String id = apiIdForHost(host);
+        if (id == null) {
+            throw missing("API");
+        }
         return apis.findAnyAccountEntry(id).orElseThrow(() -> missing("API"));
+    }
+
+    public String apiIdForHost(String host) {
+        return AppSyncEventsHost.apiId(host, baseHostname);
     }
 
     public void authorize(String account, String id, String channel, String operation, JsonNode authorization) {

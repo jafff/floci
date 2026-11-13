@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.floci.aws.core.common.AwsException;
 import io.floci.aws.core.common.GlobalCorsFilter;
+import io.floci.aws.core.common.RequestHost;
 import io.floci.aws.core.common.Resettable;
 import io.floci.aws.core.common.ServiceRegistry;
 import io.floci.aws.core.common.WebSocketUpgrades;
@@ -67,9 +68,8 @@ public class AppSyncEventsTransport implements Resettable {
 
     private void http(RoutingContext context) {
         try {
-            String host = context.request().getHeader("Host");
-            if (context.request().getHeader("x-api-key") == null
-                    && (host == null || !host.matches("[a-z0-9]{26}\\..*"))) {
+            String host = RequestHost.of(context.request());
+            if (service.apiIdForHost(host) == null) {
                 context.next();
                 return;
             }
@@ -107,13 +107,14 @@ public class AppSyncEventsTransport implements Resettable {
     }
 
     private void upgrade(RoutingContext context) {
-        if (!WebSocketUpgrades.isHandshake(context.request())) {
+        String host = RequestHost.of(context.request());
+        if (service.apiIdForHost(host) == null || !WebSocketUpgrades.isHandshake(context.request())) {
             context.next();
             return;
         }
         try {
             enabled();
-            AccountAwareStorageBackend.OwnedEntry<ObjectNode> api = service.resolve(context.request().getHeader("Host"));
+            AccountAwareStorageBackend.OwnedEntry<ObjectNode> api = service.resolve(host);
             String id = api.value().path("apiId").asText();
             String offered = context.request().getHeader("Sec-WebSocket-Protocol");
             List<String> protocols = offered == null ? List.of() : Arrays.stream(offered.split(",")).map(String::trim).toList();

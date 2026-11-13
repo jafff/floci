@@ -52,6 +52,10 @@ class AppSyncEventsIntegrationTest {
             given().contentType("application/octet-stream").body("ordinary object".getBytes(StandardCharsets.UTF_8))
                     .put("/event/realtime").then().statusCode(200);
             assertEquals("ordinary object", given().get("/event/realtime").then().statusCode(200).extract().asString());
+            given().header("x-api-key", "belongs-to-another-service").queryParam("delete", "")
+                    .contentType("application/xml").body("<Delete><Object><Key>realtime</Key></Object></Delete>")
+                    .post("/event").then().statusCode(200);
+            given().get("/event/realtime").then().statusCode(404);
         } finally {
             given().delete("/event/realtime");
             given().delete("/event");
@@ -70,6 +74,37 @@ class AppSyncEventsIntegrationTest {
         } finally {
             given().header("Authorization", authorization).delete("/v2/apis/" + id).then().statusCode(204);
         }
+    }
+
+    @Test
+    void sharedChildRoutesStillServeGraphqlApis() {
+        try (AppSyncClient client = AppSyncClient.builder().endpointOverride(endpoint).region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("test", "test"))).build()) {
+            String id = client.createGraphqlApi(b -> b.name("shared-routing").authenticationType(AuthenticationType.API_KEY))
+                    .graphqlApi().apiId();
+            try {
+                String key = client.createApiKey(b -> b.apiId(id)).apiKey().id();
+                assertEquals(key, client.listApiKeys(b -> b.apiId(id)).apiKeys().getFirst().id());
+                client.createChannelNamespace(b -> b.apiId(id).name("legacy"));
+                assertEquals("legacy", client.getChannelNamespace(b -> b.apiId(id).name("legacy")).channelNamespace().name());
+                client.deleteChannelNamespace(b -> b.apiId(id).name("legacy"));
+                client.deleteApiKey(b -> b.apiId(id).id(key));
+            } finally {
+                client.deleteGraphqlApi(b -> b.apiId(id));
+            }
+        }
+    }
+
+    @Test
+    void internalManagementPrefixRequiresAppSyncScope() {
+        given().get("/_appsync-events/v2/apis").then().statusCode(400).body(containsString("InvalidBucketName"));
+        given().header("Authorization", "AWS4-HMAC-SHA256 Credential=test/20261113/us-east-1/apigateway/aws4_request")
+                .get("/_appsync-events/v2/apis").then().statusCode(400).body(containsString("InvalidBucketName"));
+        given().header("Authorization", "AWS4-HMAC-SHA256 Credential=test/20261113/us-east-1/appsync/aws4_request")
+                .get("/v2/apis/nonexistent").then().statusCode(404).body(containsString("NotFoundException"));
+        given().queryParam("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+                .queryParam("X-Amz-Credential", "test/20261113/us-east-1/appsync/aws4_request")
+                .get("/v2/apis").then().statusCode(200).body("apis", notNullValue());
     }
 
     @Test

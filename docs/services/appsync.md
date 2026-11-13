@@ -21,6 +21,12 @@ connections and subscriptions are transient and are cleared on disconnect or emu
 | `UpdateApi` | Update an Event API name, owner contact, or authorization configuration |
 | `DeleteApi` | Delete an Event API and its namespaces and keys |
 | `ListApis` | List Event APIs with pagination |
+<!-- floci:actions:end -->
+
+Namespace and API-key operations share the existing AppSync controller and public paths:
+
+| Action | Description |
+| --- | --- |
 | `CreateChannelNamespace` | Create a channel namespace |
 | `GetChannelNamespace` | Read a channel namespace |
 | `UpdateChannelNamespace` | Update namespace authorization settings |
@@ -30,7 +36,6 @@ connections and subscriptions are transient and are cleared on disconnect or emu
 | `UpdateApiKey` | Update a key description or expiry |
 | `DeleteApiKey` | Revoke an API key |
 | `ListApiKeys` | List keys with pagination |
-<!-- floci:actions:end -->
 
 ### Create and publish
 

@@ -12,19 +12,13 @@ import jakarta.ws.rs.ext.Provider;
 @Provider
 @PreMatching
 public class AppSyncEventsRouteFilter implements ContainerRequestFilter {
+    static final String INTERNAL_PREFIX = "/_appsync-events";
     private final SignedServiceRoute route;
 
     @Inject
-    public AppSyncEventsRouteFilter(ResolvedServiceCatalog catalog, AppSyncEventsService service) {
-        route = new SignedServiceRoute(catalog, "appsync", "/_appsync-events", path -> {
-            String[] parts = path.split("/");
-            if (path.equals("/v2/apis") || path.matches("/v2/apis/[^/]+")) {
-                return true;
-            }
-            return parts.length >= 5 && "apis".equals(parts[2]) && service.contains(parts[3])
-                    && (("v2".equals(parts[1]) && "channelNamespaces".equals(parts[4]))
-                    || ("v1".equals(parts[1]) && "apikeys".equals(parts[4])));
-        });
+    public AppSyncEventsRouteFilter(ResolvedServiceCatalog catalog) {
+        route = new SignedServiceRoute(catalog, "appsync", INTERNAL_PREFIX,
+                path -> path.equals("/v2/apis") || path.matches("/v2/apis/[^/]+"));
     }
 
     @Override

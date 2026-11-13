@@ -28,14 +28,20 @@ public class AppSyncController {
     private final AppSyncService service;
     private final RegionResolver regionResolver;
     private final ObjectMapper objectMapper;
+    private final AppSyncEventsService events;
+    private final AppSyncEventsTransport eventsTransport;
 
     @Inject
     public AppSyncController(AppSyncService service,
                               RegionResolver regionResolver,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              AppSyncEventsService events,
+                              AppSyncEventsTransport eventsTransport) {
         this.service = service;
         this.regionResolver = regionResolver;
         this.objectMapper = objectMapper;
+        this.events = events;
+        this.eventsTransport = eventsTransport;
     }
 
     // ──────────────────────────── GraphQL API ────────────────────────────
@@ -411,6 +417,9 @@ public class AppSyncController {
     @POST
     @Path("/v1/apis/{apiId}/apikeys")
     public Response createApiKey(@PathParam("apiId") String apiId, String body) throws IOException {
+        if (events.contains(apiId)) {
+            return eventResponse("apiKey", events.createKey(apiId, objectMapper.readTree(body)));
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> request = objectMapper.readValue(body, Map.class);
         ApiKey key = service.createApiKey(apiId, request);
@@ -424,6 +433,9 @@ public class AppSyncController {
     public Response listApiKeys(@PathParam("apiId") String apiId,
                                 @QueryParam("maxResults") Integer maxResults,
                                 @QueryParam("nextToken") String nextToken) {
+        if (events.contains(apiId)) {
+            return Response.ok(events.listKeys(apiId, maxResults, nextToken)).build();
+        }
         AppSyncService.Page<ApiKey> page = service.listApiKeys(apiId, maxResults, nextToken);
         ObjectNode root = objectMapper.createObjectNode();
         ArrayNode items = root.putArray("apiKeys");
@@ -441,6 +453,9 @@ public class AppSyncController {
     public Response updateApiKey(@PathParam("apiId") String apiId,
                                  @PathParam("keyId") String keyId,
                                  String body) throws IOException {
+        if (events.contains(apiId)) {
+            return eventResponse("apiKey", events.updateKey(apiId, keyId, objectMapper.readTree(body)));
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> request = objectMapper.readValue(body, Map.class);
         ApiKey key = service.updateApiKey(apiId, keyId, request);
@@ -452,6 +467,10 @@ public class AppSyncController {
     @DELETE
     @Path("/v1/apis/{apiId}/apikeys/{keyId}")
     public Response deleteApiKey(@PathParam("apiId") String apiId, @PathParam("keyId") String keyId) {
+        if (events.contains(apiId)) {
+            events.deleteKey(apiId, keyId);
+            return Response.ok().build();
+        }
         service.deleteApiKey(apiId, keyId);
         return Response.noContent().build();
     }
@@ -579,6 +598,9 @@ public class AppSyncController {
     @POST
     @Path("/v2/apis/{apiId}/channelNamespaces")
     public Response createChannelNamespace(@PathParam("apiId") String apiId, String body) throws IOException {
+        if (events.contains(apiId)) {
+            return eventResponse("channelNamespace", events.createNamespace(apiId, objectMapper.readTree(body)));
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> request = objectMapper.readValue(body, Map.class);
         ChannelNamespace ns = service.createChannelNamespace(apiId, request);
@@ -590,6 +612,9 @@ public class AppSyncController {
     @GET
     @Path("/v2/apis/{apiId}/channelNamespaces/{name}")
     public Response getChannelNamespace(@PathParam("apiId") String apiId, @PathParam("name") String name) {
+        if (events.contains(apiId)) {
+            return eventResponse("channelNamespace", events.getNamespace(apiId, name));
+        }
         ChannelNamespace ns = service.getChannelNamespace(apiId, name);
         ObjectNode root = objectMapper.createObjectNode();
         root.set("channelNamespace", objectMapper.valueToTree(ns));
@@ -601,6 +626,9 @@ public class AppSyncController {
     public Response updateChannelNamespace(@PathParam("apiId") String apiId,
                                             @PathParam("name") String name,
                                             String body) throws IOException {
+        if (events.contains(apiId)) {
+            return eventResponse("channelNamespace", events.updateNamespace(apiId, name, objectMapper.readTree(body)));
+        }
         @SuppressWarnings("unchecked")
         Map<String, Object> request = objectMapper.readValue(body, Map.class);
         ChannelNamespace ns = service.updateChannelNamespace(apiId, name, request);
@@ -612,6 +640,11 @@ public class AppSyncController {
     @DELETE
     @Path("/v2/apis/{apiId}/channelNamespaces/{name}")
     public Response deleteChannelNamespace(@PathParam("apiId") String apiId, @PathParam("name") String name) {
+        if (events.contains(apiId)) {
+            events.deleteNamespace(apiId, name);
+            eventsTransport.invalidate(apiId, name);
+            return Response.ok().build();
+        }
         service.deleteChannelNamespace(apiId, name);
         return Response.noContent().build();
     }
@@ -621,6 +654,9 @@ public class AppSyncController {
     public Response listChannelNamespaces(@PathParam("apiId") String apiId,
                                           @QueryParam("maxResults") Integer maxResults,
                                           @QueryParam("nextToken") String nextToken) {
+        if (events.contains(apiId)) {
+            return Response.ok(events.listNamespaces(apiId, maxResults, nextToken)).build();
+        }
         AppSyncService.Page<ChannelNamespace> page = service.listChannelNamespaces(apiId, maxResults, nextToken);
         ObjectNode root = objectMapper.createObjectNode();
         ArrayNode items = root.putArray("channelNamespaces");
@@ -630,6 +666,12 @@ public class AppSyncController {
         } else {
             root.putNull("nextToken");
         }
+        return Response.ok(root).build();
+    }
+
+    private Response eventResponse(String field, ObjectNode value) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.set(field, value);
         return Response.ok(root).build();
     }
 
