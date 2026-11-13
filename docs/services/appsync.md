@@ -3,7 +3,85 @@
 **Protocol:** REST JSON
 **Endpoint:** `http://localhost:4566/v1/apis/...`
 
-Floci implements the AWS AppSync Management API, providing local emulation of GraphQL API configuration, schema management, data source binding, resolver mapping, API key provisioning, custom domains, and channel namespaces.
+Floci implements the AWS AppSync Management API, providing local emulation of GraphQL API configuration, schema management, data source binding, resolver mapping, API key provisioning, custom domains, and channel namespaces. AppSync Events additionally supports API-key-authenticated HTTP and WebSocket publish/subscribe.
+
+## Event APIs
+
+Event APIs use the AWS management endpoints under `/v2/apis`. Requests must be signed for
+`appsync`, allowing Floci to distinguish them from API Gateway's `/v2/apis` endpoints.
+They use the existing `floci.services.appsync.enabled` and AppSync storage settings.
+API, namespace, and key state is persisted through the configured storage backend;
+connections and subscriptions are transient and are cleared on disconnect or emulator reset.
+
+<!-- floci:actions:start -->
+| Action | Description |
+| --- | --- |
+| `CreateApi` | Create an Event API |
+| `GetApi` | Read an Event API and its HTTP and realtime DNS endpoints |
+| `UpdateApi` | Update an Event API name, owner contact, or authorization configuration |
+| `DeleteApi` | Delete an Event API and its namespaces and keys |
+| `ListApis` | List Event APIs with pagination |
+| `CreateChannelNamespace` | Create a channel namespace |
+| `GetChannelNamespace` | Read a channel namespace |
+| `UpdateChannelNamespace` | Update namespace authorization settings |
+| `DeleteChannelNamespace` | Delete a channel namespace |
+| `ListChannelNamespaces` | List namespaces with pagination |
+| `CreateApiKey` | Create an expiring API key |
+| `UpdateApiKey` | Update a key description or expiry |
+| `DeleteApiKey` | Revoke an API key |
+| `ListApiKeys` | List keys with pagination |
+<!-- floci:actions:end -->
+
+### Create and publish
+
+```bash
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+API_ID=$(aws --endpoint-url http://localhost:4566 appsync create-api \
+  --name local-events \
+  --event-config '{"authProviders":[{"authType":"API_KEY"}],"connectionAuthModes":[{"authType":"API_KEY"}],"defaultPublishAuthModes":[{"authType":"API_KEY"}],"defaultSubscribeAuthModes":[{"authType":"API_KEY"}]}' \
+  --query api.apiId --output text)
+aws --endpoint-url http://localhost:4566 appsync create-channel-namespace \
+  --api-id "$API_ID" --name chat
+API_KEY=$(aws --endpoint-url http://localhost:4566 appsync create-api-key \
+  --api-id "$API_ID" --query apiKey.id --output text)
+HTTP_DOMAIN=$(aws --endpoint-url http://localhost:4566 appsync get-api \
+  --api-id "$API_ID" --query api.dns.HTTP --output text)
+curl "http://$HTTP_DOMAIN/event" -H 'content-type: application/json' \
+  -H "x-api-key: $API_KEY" \
+  -d '{"channel":"/chat/room","events":["{\"message\":\"hello\"}"]}'
+```
+
+The returned DNS values include the configured port. Loopback base URLs use
+`<apiId>.localhost.floci.io`, whose wildcard DNS resolves to loopback. With another base
+hostname, configure wildcard DNS for `<apiId>.<hostname>`. Clients may also connect to
+the listener directly and send the API's hostname in the HTTP `Host` header.
+For browser publishing, allow your UI origin with `EXTRA_CORS_ALLOWED_ORIGINS`, as
+with Floci's other HTTP services.
+
+For WebSockets, connect to `ws://<REALTIME DNS>/event/realtime` with subprotocols
+`aws-appsync-event-ws` and `header-<base64url authorization JSON>`. The authorization
+JSON contains `host` (the HTTP DNS value) and `x-api-key`. Use `wss` when the listener
+uses TLS. A `connection_init` message receives `connection_ack` with a 300000 ms
+timeout; keep-alives arrive every 60 seconds. Each `subscribe` or `publish` message
+must also include its own `authorization` object.
+
+Supported messages are `subscribe`, `unsubscribe`, and `publish`, with their AWS
+success/error envelopes. Data messages carry the subscription `id` and an `event`
+array of stringified JSON values. HTTP and WebSocket publishing share the same fan-out.
+Subscriptions may end in `/*` to match descendants within a namespace. A publish batch
+contains one to five valid JSON strings. See the
+[AWS Events protocol](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html)
+for client message examples.
+
+### Current Events limitations
+
+- Only `API_KEY` authorization is implemented. IAM, Cognito, OIDC, and Lambda authorizers
+  are rejected during configuration rather than silently bypassed.
+- Namespace JavaScript handlers and data source integrations are rejected.
+- Events-specific CloudFormation resources, custom domains, and tag mutation operations
+  are not implemented. Tags supplied during creation are retained.
+- Delivery is live and in memory, with no replay or durable queue. AWS throughput quotas,
+  subscription quotas, 24-hour connection expiry, and full payload-size limits are not emulated.
 
 ## OIDC issuer network policy
 

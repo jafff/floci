@@ -68,6 +68,6 @@ public class HttpOptionsCustomizer implements HttpServerOptionsCustomizer {
         options.setMaxFormAttributeSize(-1);
         options.setMaxWebSocketFrameSize(MAX_WS_FRAME_SIZE);
         options.setMaxWebSocketMessageSize(MAX_WS_MESSAGE_SIZE);
-        options.setWebSocketSubProtocols(MQTT_WEBSOCKET_SUBPROTOCOLS);
+        options.setWebSocketSubProtocols(List.of("mqtt", "mqttv3.1", "mqttv3.1.1", "aws-appsync-event-ws"));
     }
 }

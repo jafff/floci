@@ -1,6 +1,7 @@
 package io.floci.aws.core.common;
 
 import io.floci.aws.config.EmulatorConfig;
+import io.vertx.ext.web.RoutingContext;
 import jakarta.annotation.Priority;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Priorities;
@@ -156,6 +157,23 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
                 .anyMatch(ORIGIN::equalsIgnoreCase);
         if (!hasOrigin) {
             headers.add(VARY, ORIGIN);
+        }
+    }
+
+    /** Apply the same configured origin policy to a data plane served directly by Vert.x. */
+    public void applyResponseHeaders(RoutingContext context) {
+        CorsSettings s = settings();
+        String origin = context.request().getHeader(ORIGIN);
+        if (s.enabled() && origin != null && s.matchesOrigin(origin)) {
+            if (!context.response().headers().contains(ALLOW_ORIGIN)) {
+                context.response().putHeader(ALLOW_ORIGIN, s.allowOriginHeader(origin));
+            }
+            s.exposeHeaders().ifPresent(value -> {
+                if (!context.response().headers().contains(EXPOSE_HEADERS)) {
+                    context.response().putHeader(EXPOSE_HEADERS, value);
+                }
+            });
+            context.response().headers().add(VARY, ORIGIN);
         }
     }
 

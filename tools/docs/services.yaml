@@ -13,6 +13,10 @@
 # tools/java_sources.py, so they do not change when the package moves.
 
 services:
+  - service: appsync-events
+    doc: docs/services/appsync.md
+    sources:
+      - { path: services/appsync/AppSyncEventsController.java, mode: rest }
   - service: quicksight
     doc: docs/services/quicksight.md
     sources:

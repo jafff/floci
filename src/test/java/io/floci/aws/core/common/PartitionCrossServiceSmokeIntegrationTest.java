@@ -714,6 +714,25 @@ class PartitionCrossServiceSmokeIntegrationTest {
 
     @ParameterizedTest
     @MethodSource(PartitionMatrix.NON_COMMERCIAL_CASES)
+    void appSyncEventApiArn(PartitionCase partitionCase) {
+        String region = offered(partitionCase, "appsync");
+        Response created = signed(region, "appsync")
+                .contentType(JSON)
+                .body("""
+                        {"name":"events-smoke","eventConfig":{
+                          "authProviders":[{"authType":"API_KEY"}],
+                          "connectionAuthModes":[{"authType":"API_KEY"}],
+                          "defaultPublishAuthModes":[{"authType":"API_KEY"}],
+                          "defaultSubscribeAuthModes":[{"authType":"API_KEY"}]}}
+                        """)
+                .when().post("/v2/apis").then().statusCode(200).extract().response();
+        String apiId = created.jsonPath().getString("api.apiId");
+        cleanup.register(() -> signed(region, "appsync").when().delete("/v2/apis/" + apiId));
+        PartitionMatrix.assertArnIn(partitionCase, created.jsonPath().getString("api.apiArn"));
+    }
+
+    @ParameterizedTest
+    @MethodSource(PartitionMatrix.NON_COMMERCIAL_CASES)
     void openSearchDomainArnAndEndpointHost(PartitionCase partitionCase) {
         String region = offered(partitionCase, "es");
         String name = "smoke" + Long.toString(System.nanoTime(), 36);
